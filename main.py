@@ -118,4 +118,4 @@ async def create_and_delete_channels(ctx):
 
 print("Bot is running...")
 
-bot.run("MTM3MTY1NzAxMDA4NDMxNTM4OA.Gje-Xr.dbJvzAuAqd1rpeUM21DZkH54itNg8xj4PlxA20")
+bot.run(os.getenv("TOKEN"))
