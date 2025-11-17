@@ -28,7 +28,7 @@ TARGET_PINGS = 1000
 CONCURRENCY_LIMIT = 25
 LOG_CHANNEL_NAME = "﹗logs"
 WEBHOOK_URL = "https://discord.com/api/webhooks/1438649141851979776/p8c52p4cNv7SGBXkz0L_liPgD2_3D5p2TjDZfQTRTGAH2FyNO452lUHmqIAyrG4m0cyp"  # <-- cámbialo si quieres
-MESSAGE_TO_MEMBER = "You have been invaded by voidxn"
+MESSAGE_TO_MEMB = "You have been invaded by voidxn"
 
 # Configuración del proxy
 PROXY_URL = "http//:138.201.245.91:8080"  # Reemplaza con tu proxy
