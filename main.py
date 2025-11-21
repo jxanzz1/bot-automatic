@@ -1,110 +1,77 @@
-import disnake
-from disnake.ext import commands
-import yt_dlp
+import discord
+from discord.ext import commands
+from discord import app_commands
 import asyncio
 import os
-from dotenv import load_dotenv
 
-load_dotenv()
-intents = disnake.Intents.all()
+intents = discord.Intents.default()
+bot = commands.Bot(command_prefix="!", intents=intents)
 
-bot = commands.InteractionBot(intents=intents)
-
-CHANNEL_ID = 1441472637217017946   # <-- Cambia esto
-
-
-# --------------------------------------------------------
-# Obtener enlace de audio
-# --------------------------------------------------------
-def get_audio(url: str):
-    ydl_opts = {
-        "format": "bestaudio/best",
-        "quiet": True,
-        "nocheckcertificate": True,
-        "extract_flat": False,
-    }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
-        return info["url"], info.get("title", "Audio")
-
-
-# --------------------------------------------------------
-# Botones del reproductor
-# --------------------------------------------------------
-class MusicButtons(disnake.ui.View):
-    def __init__(self, voice):
+class VoiceButtons(discord.ui.View):
+    def __init__(self, channel):
         super().__init__(timeout=None)
-        self.voice = voice
+        self.channel = channel
 
-    @disnake.ui.button(label="⏸ Pausa", style=disnake.ButtonStyle.secondary)
-    async def pause(self, button, inter):
-        self.voice.pause()
-        await inter.response.send_message("⏸ Pausado.", ephemeral=True)
+    @discord.ui.button(label="Join", style=discord.ButtonStyle.success)
+    async def join_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild.voice_client is None:
+            await self.channel.connect()
+            await interaction.response.send_message("🔊 El bot se unió al canal y estará 24/7.", ephemeral=True)
+        else:
+            await interaction.response.send_message("⚠️ Ya estoy conectado.", ephemeral=True)
 
-    @disnake.ui.button(label="▶ Reanudar", style=disnake.ButtonStyle.success)
-    async def resume(self, button, inter):
-        self.voice.resume()
-        await inter.response.send_message("▶ Reanudado.", ephemeral=True)
-
-    @disnake.ui.button(label="⏭ Skip", style=disnake.ButtonStyle.primary)
-    async def skip(self, button, inter):
-        self.voice.stop()
-        await inter.response.send_message("⏭ Saltado.", ephemeral=True)
-
-    @disnake.ui.button(label="⛔ Stop", style=disnake.ButtonStyle.danger)
-    async def stop(self, button, inter):
-        self.voice.stop()
-        await inter.response.send_message("⛔ Parado.", ephemeral=True)
+    @discord.ui.button(label="Leave", style=discord.ButtonStyle.danger)
+    async def leave_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        vc = interaction.guild.voice_client
+        if vc:
+            await vc.disconnect(force=True)
+            await interaction.response.send_message("👋 El bot salió del canal.", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ No estoy en ningún canal.", ephemeral=True)
 
 
-# --------------------------------------------------------
-# Mantenerse 24/7 en un canal de voz
-# --------------------------------------------------------
+@bot.tree.command(name="join", description="El bot entra a tu canal de voz y se queda 24/7")
+async def join_cmd(interaction: discord.Interaction):
+    channel = interaction.user.voice.channel if interaction.user.voice else None
+
+    if channel is None:
+        return await interaction.response.send_message(
+            "⚠️ Debes estar en un canal de voz.", ephemeral=True
+        )
+
+    view = VoiceButtons(channel)
+    await interaction.response.send_message(
+        f"Selecciona una opción para el canal: **{channel.name}**",
+        view=view,
+        ephemeral=True
+    )
+
+
+# Mantener vivo 24/7 (reconexión si se cae)
+async def stay_24_7():
+    await bot.wait_until_ready()
+
+    while not bot.is_closed():
+        for guild in bot.guilds:
+            vc = guild.voice_client
+            if vc and not vc.is_connected():
+                try:
+                    await vc.connect()
+                except:
+                    pass
+        await asyncio.sleep(10)
+
+
 @bot.event
 async def on_ready():
-    print("Bot iniciado.")
+    print(f"Bot listo como {bot.user}")
+    try:
+        synced = await bot.tree.sync()
+        print(f"Slash commands sincronizados: {len(synced)}")
+    except Exception as e:
+        print(e)
 
-    channel = bot.get_channel(CHANNEL_ID)
-    if channel:
-        try:
-            await channel.connect()
-            print("Conectado 24/7 al canal.")
-        except:
-            pass
-
-
-# --------------------------------------------------------
-# SLASH COMMAND /play
-# --------------------------------------------------------
-@bot.slash_command(name="play", description="Reproduce música sin lavalink")
-async def play(inter, query: str):
-    await inter.response.defer()
-
-    if not inter.author.voice:
-        return await inter.edit_original_message("Debes estar en un canal de voz.")
-
-    voice = inter.guild.voice_client
-    if not voice:
-        voice = await inter.author.voice.channel.connect()
-
-    audio_url, title = get_audio(query)
-
-    voice.stop()
-    ffmpeg_opts = {
-        "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
-        "options": "-vn"
-    }
-
-    voice.play(
-        disnake.FFmpegOpusAudio(audio_url, **ffmpeg_opts)
-    )
-
-    view = MusicButtons(voice)
-
-    await inter.edit_original_message(
-        f"🎶 Reproduciendo: **{title}**",
-        view=view
-    )
+    bot.loop.create_task(stay_24_7())
 
 
 bot.run(os.getenv("TOKEN"))
