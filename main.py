@@ -5,7 +5,7 @@ import asyncio
 import os
 
 intents = discord.Intents.default()
-bot = commands.Bot(command_prefix=".", intents=intents)
+bot = commands.Bot(command_prefix=";", intents=intents)
 
 class VoiceButtons(discord.ui.View):
     def __init__(self, channel):
