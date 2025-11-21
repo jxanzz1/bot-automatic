@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 TOKEN = os.getenv("TOKEN")
-CHANNEL_ID = int(os.getenv("VOICE_CHANNEL_ID"))
+CHANNEL_ID = int(os.getenv("1441472637217017946"))
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix=";", intents=intents)
