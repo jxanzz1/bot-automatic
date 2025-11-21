@@ -1,89 +1,110 @@
-import discord
-from discord.ext import commands
-import wavelink
+import disnake
+from disnake.ext import commands
+import yt_dlp
 import asyncio
 import os
 from dotenv import load_dotenv
 
-# Cargar variables del archivo .env
 load_dotenv()
+intents = disnake.Intents.all()
 
-TOKEN = os.getenv("TOKEN")
-CHANNEL_ID = int(os.getenv("1441472637217017946"))
+bot = commands.InteractionBot(intents=intents)
 
-intents = discord.Intents.all()
-bot = commands.Bot(command_prefix=";", intents=intents)
+CHANNEL_ID = 1441472637217017946   # <-- Cambia esto
 
 
+# --------------------------------------------------------
+# Obtener enlace de audio
+# --------------------------------------------------------
+def get_audio(url: str):
+    ydl_opts = {
+        "format": "bestaudio/best",
+        "quiet": True,
+        "nocheckcertificate": True,
+        "extract_flat": False,
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+        return info["url"], info.get("title", "Audio")
+
+
+# --------------------------------------------------------
+# Botones del reproductor
+# --------------------------------------------------------
+class MusicButtons(disnake.ui.View):
+    def __init__(self, voice):
+        super().__init__(timeout=None)
+        self.voice = voice
+
+    @disnake.ui.button(label="⏸ Pausa", style=disnake.ButtonStyle.secondary)
+    async def pause(self, button, inter):
+        self.voice.pause()
+        await inter.response.send_message("⏸ Pausado.", ephemeral=True)
+
+    @disnake.ui.button(label="▶ Reanudar", style=disnake.ButtonStyle.success)
+    async def resume(self, button, inter):
+        self.voice.resume()
+        await inter.response.send_message("▶ Reanudado.", ephemeral=True)
+
+    @disnake.ui.button(label="⏭ Skip", style=disnake.ButtonStyle.primary)
+    async def skip(self, button, inter):
+        self.voice.stop()
+        await inter.response.send_message("⏭ Saltado.", ephemeral=True)
+
+    @disnake.ui.button(label="⛔ Stop", style=disnake.ButtonStyle.danger)
+    async def stop(self, button, inter):
+        self.voice.stop()
+        await inter.response.send_message("⛔ Parado.", ephemeral=True)
+
+
+# --------------------------------------------------------
+# Mantenerse 24/7 en un canal de voz
+# --------------------------------------------------------
 @bot.event
 async def on_ready():
-    print(f"Bot iniciado como {bot.user}")
+    print("Bot iniciado.")
 
-    # Conectar Lavalink
-    await wavelink.NodePool.create_node(
-        bot=bot,
-        host="lavalink-realtime.up.railway.app",
-        port=443,
-        password="youshallnotpass",
-        https=True
-    )
-    print("Lavalink conectado.")
-
-    await connect_to_voice()
-
-
-async def connect_to_voice():
-    await bot.wait_until_ready()
     channel = bot.get_channel(CHANNEL_ID)
-
-    if channel and isinstance(channel, discord.VoiceChannel):
-        if not channel.guild.voice_client:
-            await channel.connect(cls=wavelink.Player)
-            print("Conectado al canal 24/7.")
-    else:
-        print("❌ ERROR: ID del canal inválido.")
-
-
-@bot.command()
-async def play(ctx, *, search: str):
-    if not ctx.voice_client:
-        await ctx.author.voice.channel.connect(cls=wavelink.Player)
-
-    player: wavelink.Player = ctx.voice_client
-    track = await wavelink.YouTubeTrack.search(query=search, return_first=True)
-    await player.play(track)
-    await ctx.send(f"🎧 Reproduciendo: **{track.title}**")
+    if channel:
+        try:
+            await channel.connect()
+            print("Conectado 24/7 al canal.")
+        except:
+            pass
 
 
-@bot.command()
-async def pause(ctx):
-    await ctx.voice_client.pause()
-    await ctx.send("⏸ Pausado.")
+# --------------------------------------------------------
+# SLASH COMMAND /play
+# --------------------------------------------------------
+@bot.slash_command(name="play", description="Reproduce música sin lavalink")
+async def play(inter, query: str):
+    await inter.response.defer()
+
+    if not inter.author.voice:
+        return await inter.edit_original_message("Debes estar en un canal de voz.")
+
+    voice = inter.guild.voice_client
+    if not voice:
+        voice = await inter.author.voice.channel.connect()
+
+    audio_url, title = get_audio(query)
+
+    voice.stop()
+    ffmpeg_opts = {
+        "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+        "options": "-vn"
+    }
+
+    voice.play(
+        disnake.FFmpegOpusAudio(audio_url, **ffmpeg_opts)
+    )
+
+    view = MusicButtons(voice)
+
+    await inter.edit_original_message(
+        f"🎶 Reproduciendo: **{title}**",
+        view=view
+    )
 
 
-@bot.command()
-async def resume(ctx):
-    await ctx.voice_client.resume()
-    await ctx.send("▶ Reanudado.")
-
-
-@bot.command()
-async def stop(ctx):
-    await ctx.voice_client.stop()
-    await ctx.send("⏹ Detenido.")
-
-
-@bot.command()
-async def skip(ctx):
-    await ctx.voice_client.stop()
-    await ctx.send("⏭ Saltado.")
-
-
-@bot.command()
-async def volume(ctx, vol: int):
-    player: wavelink.Player = ctx.voice_client
-    await player.set_volume(vol)
-    await ctx.send(f"🔊 Volumen: **{vol}%**")
-
-
-bot.run(TOKEN)
+bot.run(os.getenv("TOKEN"))
