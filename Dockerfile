@@ -1,14 +1,6 @@
 FROM python:3.11
-
-# Instalar FFmpeg
-RUN apt-get update && apt-get install -y ffmpeg
-
-# Copiar archivos del bot
+RUN apt update && apt install -y ffmpeg
 WORKDIR /app
-COPY . /app
-
-# Instalar dependencias
+COPY . .
 RUN pip install -r requirements.txt
-
-# Ejecutar el bot
 CMD ["python", "main.py"]
