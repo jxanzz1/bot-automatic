@@ -171,7 +171,7 @@ async def on_ready():
     print(f"Bot activo como {bot.user}")
 
 # --- Correr el bot con token seguro ---
-TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
+TOKEN = os.environ.get("TOKEN")
 if not TOKEN:
     raise ValueError("❌ La variable de entorno DISCORD_BOT_TOKEN no está configurada.")
 bot.run(TOKEN)
