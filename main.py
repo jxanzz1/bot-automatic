@@ -1,269 +1,177 @@
-import os
 import discord
 from discord.ext import commands
-from discord import app_commands
-import yt_dlp
 import asyncio
+import yt_dlp
+import datetime
+import os
 
 intents = discord.Intents.all()
-bot = commands.Bot(command_prefix=";", intents=intents)
-tree = bot.tree
+bot = commands.Bot(command_prefix='/', intents=intents)
 
-# --- CONFIGURACIÓN DE YT-DLP ---
-ytdl_format_options = {
-    'format': 'bestaudio/best',
-    'quiet': True,
-    'noplaylist': True,
+# Configuración de yt-dlp + ffmpeg
+YDL_OPTIONS = {
+    "format": "bestaudio/best",
+    "noplaylist": True,
+    "quiet": True
 }
-ffmpeg_options = {'options': '-vn'}
 
-ytdl = yt_dlp.YoutubeDL(ytdl_format_options)
+FFMPEG_OPTIONS = {
+    "options": "-vn"
+}
 
-# Multi-servidor
-queue = {}
-now_playing = {}
-loop_mode = {}
+# Reproductor global (sin cola por servidor)
+current_song = {}
+vc_dict = {}  # Guarda voice_client por guild
 
+# ============
+# BOTONES
+# ============
 
-# --- FUNCIONES ---
-async def join_vc(interaction):
-    guild = interaction.guild
-    vc = guild.voice_client
-
-    if not interaction.user.voice or not interaction.user.voice.channel:
-        await interaction.followup.send("❌ Debes estar en un **canal de voz**.", ephemeral=True)
-        return None
-
-    channel = interaction.user.voice.channel
-
-    if vc and vc.channel != channel:
-        await vc.move_to(channel)
-    elif vc is None:
-        vc = await channel.connect()
-
-    return vc
-
-
-async def play_next(guild_id, interaction):
-    if loop_mode.get(guild_id) and now_playing.get(guild_id):
-        await play_song(interaction, now_playing[guild_id]['url'])
-        return
-
-    if queue[guild_id]:
-        song = queue[guild_id].pop(0)
-        await play_song(interaction, song['url'])
-    else:
-        now_playing[guild_id] = None
-
-
-async def play_song(interaction, query):
-    guild = interaction.guild
-    guild_id = guild.id
-
-    vc = await join_vc(interaction)
-    if vc is None:
-        return
-
-    try:
-        data = ytdl.extract_info(query, download=False)
-    except Exception:
-        data = ytdl.extract_info(f"ytsearch:{query}", download=False)['entries'][0]
-
-    url = data['url']
-    title = data.get('title', 'Unknown')
-
-    now_playing[guild_id] = {'title': title, 'url': query}
-
-    source = await discord.FFmpegOpusAudio.from_probe(url, **ffmpeg_options)
-
-    vc.play(
-        source,
-        after=lambda e: asyncio.run_coroutine_threadsafe(
-            play_next(guild_id, interaction),
-            bot.loop
-        )
-    )
-
-    await interaction.followup.send(
-        f"🎶 **Reproduciendo:** `{title}`",
-        view=MusicButtons()
-    )
-
-
-# --- BOTONES ---
-class MusicButtons(discord.ui.View):
-    def __init__(self):
+class MusicControls(discord.ui.View):
+    def __init__(self, guild_id):
         super().__init__(timeout=None)
+        self.guild_id = guild_id
 
-    @discord.ui.button(label="⏸ Pausar", style=discord.ButtonStyle.blurple)
-    async def pause(self, interaction: discord.Interaction, button: discord.ui.Button):
-        vc = interaction.guild.voice_client
-        if vc and vc.is_playing():
-            vc.pause()
-            await interaction.response.send_message("⏸ Música pausada", ephemeral=True)
+    @discord.ui.button(label="⏯️ Play/Pause", style=discord.ButtonStyle.secondary)
+    async def pause_resume(self, interaction: discord.Interaction, button: discord.ui.Button):
+        vc = vc_dict.get(self.guild_id)
+        if vc:
+            if vc.is_playing():
+                vc.pause()
+                await interaction.response.send_message("⏸️ Pausado", ephemeral=True)
+            elif vc.is_paused():
+                vc.resume()
+                await interaction.response.send_message("▶️ Reanudado", ephemeral=True)
 
-    @discord.ui.button(label="▶️ Reanudar", style=discord.ButtonStyle.green)
-    async def resume(self, interaction: discord.Interaction, button: discord.ui.Button):
-        vc = interaction.guild.voice_client
-        if vc and vc.is_paused():
-            vc.resume()
-            await interaction.response.send_message("▶️ Música reanudada", ephemeral=True)
-
-    @discord.ui.button(label="⏭ Saltar", style=discord.ButtonStyle.gray)
+    @discord.ui.button(label="⏭️ Skip", style=discord.ButtonStyle.secondary)
     async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
-        vc = interaction.guild.voice_client
-        if vc and vc.is_playing():
-            vc.stop()
-            await interaction.response.send_message("⏭ Canción saltada", ephemeral=True)
-
-    @discord.ui.button(label="🔁 Loop", style=discord.ButtonStyle.gray)
-    async def loop(self, interaction: discord.Interaction, button: discord.ui.Button):
-        guild_id = interaction.guild.id
-        loop_mode[guild_id] = not loop_mode.get(guild_id, False)
-        estado = "activado" if loop_mode[guild_id] else "desactivado"
-        await interaction.response.send_message(f"🔁 Loop {estado}", ephemeral=True)
-
-    @discord.ui.button(label="⏹ Detener", style=discord.ButtonStyle.red)
-    async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
-        guild_id = interaction.guild.id
-        queue[guild_id] = []
-        vc = interaction.guild.voice_client
+        vc = vc_dict.get(self.guild_id)
         if vc:
             vc.stop()
-        await interaction.response.send_message("⏹ Música detenida", ephemeral=True)
+            await interaction.response.send_message("⏭️ Canción saltada", ephemeral=True)
 
+    @discord.ui.button(label="⏹️ Stop", style=discord.ButtonStyle.secondary)
+    async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
+        vc = vc_dict.get(self.guild_id)
+        if vc:
+            vc.stop()
+            await vc.disconnect()
+            current_song.pop(self.guild_id, None)
+            vc_dict.pop(self.guild_id, None)
+            await interaction.response.send_message("⏹️ Música detenida", ephemeral=True)
 
-# --- SLASH COMMANDS ---
-@tree.command(name="play", description="Reproduce una canción o URL")
-async def play(interaction: discord.Interaction, *, query: str):
-    await interaction.response.defer()
-    guild_id = interaction.guild.id
+# ============
+# FUNCIONES
+# ============
 
-    queue.setdefault(guild_id, [])
-    loop_mode.setdefault(guild_id, False)
+async def start_playing(ctx, url):
+    guild_id = ctx.guild.id
 
-    vc = await join_vc(interaction)
-    if vc is None:
+    if not ctx.author.voice:
+        return await ctx.send("❌ Debes estar en un canal de voz.")
+    channel = ctx.author.voice.channel
+
+    if guild_id not in vc_dict or not vc_dict[guild_id].is_connected():
+        vc = await channel.connect()
+        vc_dict[guild_id] = vc
+    else:
+        vc = vc_dict[guild_id]
+
+    try:
+        with yt_dlp.YoutubeDL(YDL_OPTIONS) as ydl:
+            info = ydl.extract_info(url, download=False)
+            audio_url = info["url"]
+            title = info.get("title", "Desconocido")
+            duration = info.get("duration", 0)
+            current_song[guild_id] = {"title": title, "duration": duration, "url": url, "start": asyncio.get_event_loop().time()}
+
+        source = discord.FFmpegPCMAudio(audio_url, **FFMPEG_OPTIONS)
+        vc.play(source, after=lambda e: asyncio.run_coroutine_threadsafe(finish_song(guild_id), bot.loop))
+    except Exception as e:
+        print("Error:", e)
+        await ctx.send("❌ Ocurrió un error al reproducir la canción.")
         return
 
-    if vc.is_playing() or vc.is_paused():
-        queue[guild_id].append({'url': query})
-        await interaction.followup.send(f"➕ Añadido a la cola: `{query}`")
-    else:
-        await play_song(interaction, query)
+    # Embed con barra de progreso animada
+    embed = discord.Embed(title=f"🎶 Reproduciendo ahora:", description=f"**{title}**", color=discord.Color.white())
+    embed.add_field(name="Duración", value=progress_bar_animated(0, duration, 20))
+    message = await ctx.send(embed=embed, view=MusicControls(guild_id))
 
-
-@tree.command(name="skip", description="Salta la canción actual")
-async def skip(interaction: discord.Interaction):
-    vc = interaction.guild.voice_client
-    if vc and vc.is_playing():
-        vc.stop()
-        await interaction.response.send_message("⏭ Canción saltada")
-
-
-@tree.command(name="stop", description="Detiene la música y limpia la cola")
-async def stop(interaction: discord.Interaction):
-    guild_id = interaction.guild.id
-    queue[guild_id] = []
-    vc = interaction.guild.voice_client
-    if vc:
-        vc.stop()
-    await interaction.response.send_message("🛑 Música detenida y cola limpiada")
-
-
-@tree.command(name="queue", description="Muestra la cola")
-async def queue_cmd(interaction: discord.Interaction):
-    guild_id = interaction.guild.id
-    if guild_id not in queue or not queue[guild_id]:
-        await interaction.response.send_message("📭 La cola está vacía")
-    else:
-        lista = "\n".join([f"{i+1}. {s['url']}" for i, s in enumerate(queue[guild_id])])
-        await interaction.response.send_message(f"📜 **Cola:**\n{lista}")
-
-
-@tree.command(name="leave", description="Desconecta al bot del canal de voz")
-async def leave(interaction: discord.Interaction):
-    vc = interaction.guild.voice_client
-    if vc:
-        await vc.disconnect()
-        await interaction.response.send_message("❌ Desconectado.")
-
-
-# --- AUTO-RECONEXIÓN ---
-@bot.event
-async def on_voice_state_update(member, before, after):
-    if member.id != bot.user.id:
-        return
-
-    guild = member.guild
-    guild_id = guild.id
-    vc = guild.voice_client
-
-    # Bot desconectado manualmente
-    if before.channel and not after.channel:
-        print(f"⚠️ Bot desconectado de {guild.name}, intentando reconectar...")
-        await asyncio.sleep(2)
-
-        if now_playing.get(guild_id):
+    # Actualizar barra de progreso cada segundo
+    async def update_progress():
+        while vc.is_playing() or vc.is_paused():
+            elapsed = int(asyncio.get_event_loop().time() - current_song[guild_id]["start"])
+            bar = progress_bar_animated(elapsed, duration, 20)
+            embed.set_field_at(0, name="Duración", value=f"{format_time(elapsed)} / {format_time(duration)} {bar}")
             try:
-                if before.channel:
-                    await before.channel.connect()
-                    print(f"🔄 Reconectado en {guild.name}")
+                await message.edit(embed=embed)
             except:
-                print(f"❌ No se pudo reconectar en {guild.name}")
+                pass
+            await asyncio.sleep(1)
+    bot.loop.create_task(update_progress())
 
+async def finish_song(guild_id):
+    current_song.pop(guild_id, None)
+    vc_dict.pop(guild_id, None)
 
-# LOOP QUE REPARA MÚSICA CAÍDA
-async def autoreconnect_loop():
-    await bot.wait_until_ready()
-    while not bot.is_closed():
-        for guild in bot.guilds:
-            vc = guild.voice_client
-            guild_id = guild.id
+# ============
+# COMANDOS
+# ============
 
-            if not vc:
-                continue
+@bot.command()
+async def play(ctx, url):
+    await start_playing(ctx, url)
 
-            if not vc.is_playing() and now_playing.get(guild_id):
-                print(f"🔧 Reparando reproducción en {guild.name}...")
+@bot.command()
+async def stop(ctx):
+    vc = vc_dict.get(ctx.guild.id)
+    if vc:
+        vc.stop()
+        await vc.disconnect()
+        current_song.pop(ctx.guild.id, None)
+        vc_dict.pop(ctx.guild.id, None)
+        await ctx.send("⏹️ Música detenida y bot desconectado.")
 
-                try:
-                    url = now_playing[guild_id]['url']
-                    await play_song(DummyInteraction(guild), url)
-                except Exception as e:
-                    print(f"❌ Error al reparar música en {guild.name}: {e}")
+@bot.command()
+async def pause(ctx):
+    vc = vc_dict.get(ctx.guild.id)
+    if vc and vc.is_playing():
+        vc.pause()
+        await ctx.send("⏸️ Pausado")
 
-        await asyncio.sleep(5)
+@bot.command()
+async def resume(ctx):
+    vc = vc_dict.get(ctx.guild.id)
+    if vc and vc.is_paused():
+        vc.resume()
+        await ctx.send("▶️ Reanudado")
 
+# ============
+# FUNCIONES AUXILIARES
+# ============
 
-class DummyInteraction:
-    def __init__(self, guild):
-        self.guild = guild
-        self.user = None
-        self.followup = self
+def format_time(seconds):
+    return str(datetime.timedelta(seconds=seconds))
 
-    async def send(self, *args, **kwargs):
-        pass
+def progress_bar_animated(current, total, length=20):
+    """Barra de progreso animada tipo visualizador Jar"""
+    if total == 0:
+        return "[{}]".format("—"*length)
+    filled = int(length * current // total)
+    pointer = "🔘" if filled < length else "█"
+    bar = "█"*filled + pointer + "—"*(length - filled - 1 if filled < length else 0)
+    return f"[{bar}]"
 
-    async def send_message(self, *args, **kwargs):
-        pass
+# ============
+# ENCENDIDO
+# ============
 
-    async def defer(self):
-        pass
-
-
-bot.loop.create_task(autoreconnect_loop())
-
-
-# --- READY ---
 @bot.event
 async def on_ready():
-    print(f"✅ Conectado como {bot.user}")
-    try:
-        await tree.sync()
-        print("✅ Slash commands sincronizados.")
-    except Exception as e:
-        print(f"❌ Error sincronizando: {e}")
+    print(f"Bot activo como {bot.user}")
 
-
-bot.run(os.getenv("TOKEN"))
+# --- Correr el bot con token seguro ---
+TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
+if not TOKEN:
+    raise ValueError("❌ La variable de entorno DISCORD_BOT_TOKEN no está configurada.")
+bot.run(TOKEN)
